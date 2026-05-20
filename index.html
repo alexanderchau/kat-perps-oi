@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Katana Perps · Open Interest & Volume</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%E2%9A%94%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #13171c;
+    --border: #23282f;
+    --fg: #e6e8eb;
+    --mute: #8a93a0;
+    --accent: #ff6b35;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font: 14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+    background: var(--bg); color: var(--fg);
+  }
+  header { max-width: 1100px; margin: 0 auto 20px; }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { color: var(--mute); font-size: 13px; }
+  .sub a { color: var(--accent); text-decoration: none; }
+  .sub a:hover { text-decoration: underline; }
+  main { max-width: 1100px; margin: 0 auto; display: grid; gap: 20px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 18px;
+  }
+  .card h2 { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: var(--mute); text-transform: uppercase; letter-spacing: 0.06em; }
+  .chart-wrap { position: relative; height: 320px; }
+  .big { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
+  .delta { font-size: 13px; margin-left: 10px; }
+  .up { color: #4ade80; }
+  .down { color: #f87171; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 10px 12px; text-align: right; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--mute); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  tr:last-child td { border-bottom: none; }
+  .range {
+    display: inline-flex; gap: 4px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 3px; margin-bottom: 12px;
+  }
+  .range button {
+    background: transparent; border: 0; color: var(--mute); padding: 4px 10px;
+    font: inherit; border-radius: 4px; cursor: pointer;
+  }
+  .range button.active { background: var(--panel); color: var(--fg); }
+  .empty { color: var(--mute); text-align: center; padding: 40px 0; }
+  footer { max-width: 1100px; margin: 24px auto 0; color: var(--mute); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Katana Perps · Open Interest &amp; Volume</h1>
+  <div class="sub">Hourly snapshot of notional OI and trader volume across all markets on <a href="https://perps.katana.network">perps.katana.network</a>. <span id="updated"></span></div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Total Notional OI</h2>
+    <div><span id="total-now" class="big">—</span><span id="total-delta" class="delta"></span></div>
+    <div class="range" id="range">
+      <button data-h="24" class="active">24h</button>
+      <button data-h="168">7d</button>
+      <button data-h="720">30d</button>
+      <button data-h="0">All</button>
+    </div>
+    <div class="chart-wrap"><canvas id="total-chart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>24h Trader Volume &amp; Fees (exchange-wide)</h2>
+    <div><span id="vol-now" class="big">—</span><span id="vol-delta" class="delta"></span><span id="fee-now" class="delta" style="color:#fbbf24"></span></div>
+    <div class="range" id="vol-range">
+      <button data-h="24" class="active">24h</button>
+      <button data-h="168">7d</button>
+      <button data-h="720">30d</button>
+      <button data-h="0">All</button>
+    </div>
+    <div class="chart-wrap"><canvas id="vol-chart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>Per-Market OI (USD notional)</h2>
+    <div class="chart-wrap"><canvas id="markets-chart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>Latest Snapshot</h2>
+    <div id="table-wrap"></div>
+  </div>
+</main>
+
+<footer>
+  Data source: <code>api-perps.katana.network/v1/markets</code> + <code>/v1/exchange</code>. Collected hourly on M4. Notional OI = openInterest × indexPrice; 24h volume reported by the API in USD (rolling). Fees estimated at a blended rate of 70% taker + 30% maker on documented base rates (<a href="https://docs-perps.katana.network/fees">0.04% taker / 0.01% maker</a>) → 0.031% × volume. Excludes the 5% referral-code discount; actual fees depend on real maker/taker mix.
+</footer>
+
+<script>
+const fmtUsd = n => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+const fmtUsdSmall = n => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(n);
+const fmtPct = n => (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+
+const PALETTE = ['#ff6b35', '#4ade80', '#60a5fa', '#f472b6', '#fbbf24', '#a78bfa', '#22d3ee', '#fb7185'];
+
+// Blended fee assumption: 70% taker (0.04%) + 30% maker (0.01%) = 0.031% — base rates per docs-perps.katana.network/fees, excludes 5% referral discount
+const FEE_RATE = 0.7 * 0.0004 + 0.3 * 0.0001;
+
+const GRID = 'rgba(138, 147, 160, 0.1)';
+const TICK = '#8a93a0';
+
+Chart.defaults.color = TICK;
+Chart.defaults.font.family = '-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif';
+
+let totalChart, volChart, marketsChart;
+let DATA = null;
+let rangeHours = 24;
+let volRangeHours = 24;
+
+function filterByRange(points, hours) {
+  if (!hours) return points;
+  const cutoff = Date.now() - hours * 3600 * 1000;
+  return points.filter(p => p.t >= cutoff);
+}
+
+function timeAxis(hours) {
+  const unit = hours === 24 ? 'hour'
+    : hours === 168 ? 'day'
+    : hours === 720 ? 'day'
+    : 'week';
+  const displayFormats = {
+    hour: 'HH:mm',
+    day: 'MMM d',
+    week: 'MMM d',
+  };
+  return { type: 'time', time: { unit, displayFormats }, grid: { color: GRID }, ticks: { color: TICK, maxRotation: 0, autoSkip: true } };
+}
+
+function renderTotal() {
+  const pts = filterByRange(DATA.total, rangeHours);
+  const latest = DATA.total[DATA.total.length - 1];
+  const ref = pts[0];
+  document.getElementById('total-now').textContent = latest ? fmtUsd(latest.usd) : '—';
+  const deltaEl = document.getElementById('total-delta');
+  if (latest && ref && ref !== latest && ref.usd > 0) {
+    const pct = ((latest.usd - ref.usd) / ref.usd) * 100;
+    deltaEl.textContent = fmtPct(pct);
+    deltaEl.className = 'delta ' + (pct >= 0 ? 'up' : 'down');
+  } else {
+    deltaEl.textContent = '';
+  }
+
+  const cfg = {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: 'Total OI',
+        data: pts.map(p => ({ x: p.t, y: p.usd })),
+        borderColor: '#ff6b35',
+        backgroundColor: 'rgba(255,107,53,0.1)',
+        fill: true,
+        tension: 0.25,
+        pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: '#ff6b35',
+        pointHoverBorderColor: '#0b0d10',
+        pointHoverBorderWidth: 2,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => fmtUsdSmall(ctx.parsed.y) } } },
+      scales: {
+        x: timeAxis(rangeHours),
+        y: { grid: { color: GRID }, ticks: { color: TICK, callback: v => fmtUsd(v) } },
+      },
+    },
+  };
+  if (totalChart) totalChart.destroy();
+  totalChart = new Chart(document.getElementById('total-chart'), cfg);
+}
+
+function renderVolume() {
+  const allPts = DATA.total.filter(p => p.vol != null);
+  const pts = filterByRange(allPts, volRangeHours);
+  const latest = allPts[allPts.length - 1];
+  const ref = pts[0];
+  document.getElementById('vol-now').textContent = latest ? fmtUsd(latest.vol) : '—';
+  const deltaEl = document.getElementById('vol-delta');
+  if (latest && ref && ref !== latest && ref.vol > 0) {
+    const pct = ((latest.vol - ref.vol) / ref.vol) * 100;
+    deltaEl.textContent = fmtPct(pct);
+    deltaEl.className = 'delta ' + (pct >= 0 ? 'up' : 'down');
+  } else {
+    deltaEl.textContent = '';
+  }
+  const feeEl = document.getElementById('fee-now');
+  feeEl.textContent = latest ? '· est. fees ' + fmtUsd(latest.vol * FEE_RATE) : '';
+
+  const cfg = {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: '24h Volume',
+          data: pts.map(p => ({ x: p.t, y: p.vol })),
+          borderColor: '#60a5fa',
+          backgroundColor: 'rgba(96,165,250,0.1)',
+          fill: true,
+          tension: 0.25,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+          pointHoverBackgroundColor: '#60a5fa',
+          pointHoverBorderColor: '#0b0d10',
+          pointHoverBorderWidth: 2,
+          borderWidth: 2,
+          yAxisID: 'y',
+        },
+        {
+          label: 'Est. fees (blended)',
+          data: pts.map(p => ({ x: p.t, y: p.vol * FEE_RATE })),
+          borderColor: '#fbbf24',
+          backgroundColor: 'rgba(251,191,36,0.05)',
+          fill: false,
+          tension: 0.25,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+          pointHoverBackgroundColor: '#fbbf24',
+          pointHoverBorderColor: '#0b0d10',
+          pointHoverBorderWidth: 2,
+          borderWidth: 2,
+          borderDash: [4, 3],
+          yAxisID: 'yFee',
+        },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { color: '#e6e8eb', boxWidth: 12 } },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}  ${fmtUsdSmall(ctx.parsed.y)}` } },
+      },
+      scales: {
+        x: timeAxis(volRangeHours),
+        y: { position: 'left', grid: { color: GRID }, ticks: { color: TICK, callback: v => fmtUsd(v) } },
+        yFee: { position: 'right', grid: { display: false }, ticks: { color: '#fbbf24', callback: v => fmtUsd(v) } },
+      },
+    },
+  };
+  if (volChart) volChart.destroy();
+  volChart = new Chart(document.getElementById('vol-chart'), cfg);
+}
+
+function renderMarkets() {
+  const syms = Object.keys(DATA.markets).sort();
+  const datasets = syms.map((sym, i) => {
+    const color = PALETTE[i % PALETTE.length];
+    const pts = filterByRange(DATA.markets[sym].points, rangeHours);
+    return {
+      label: sym,
+      data: pts.map(p => ({ x: p.t, y: p.usd })),
+      borderColor: color,
+      backgroundColor: color + '22',
+      tension: 0.25,
+      pointRadius: 0,
+      pointHoverRadius: 5,
+      pointHoverBackgroundColor: color,
+      pointHoverBorderColor: '#0b0d10',
+      pointHoverBorderWidth: 2,
+      borderWidth: 2,
+    };
+  });
+
+  const cfg = {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'bottom', labels: { color: '#e6e8eb' } }, tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}  ${fmtUsdSmall(ctx.parsed.y)}` } } },
+      scales: {
+        x: timeAxis(rangeHours),
+        y: { grid: { color: GRID }, ticks: { color: TICK, callback: v => fmtUsd(v) } },
+      },
+    },
+  };
+  if (marketsChart) marketsChart.destroy();
+  marketsChart = new Chart(document.getElementById('markets-chart'), cfg);
+}
+
+function renderTable() {
+  const syms = Object.keys(DATA.markets).sort();
+  const rows = syms.map(sym => {
+    const m = DATA.markets[sym];
+    const last = m.points[m.points.length - 1];
+    const dayAgo = m.points.find(p => p.t >= Date.now() - 24 * 3600 * 1000) || m.points[0];
+    const pct = dayAgo && dayAgo.usd > 0 ? ((last.usd - dayAgo.usd) / dayAgo.usd) * 100 : 0;
+    const cls = pct >= 0 ? 'up' : 'down';
+    const vol = last.vol != null ? fmtUsd(last.vol) : '—';
+    const tr = last.tr != null ? last.tr.toLocaleString() : '—';
+    return `<tr>
+      <td>${sym}</td>
+      <td>${last.oi.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
+      <td>${fmtUsdSmall(last.px)}</td>
+      <td>${fmtUsd(last.usd)}</td>
+      <td class="${cls}">${m.points.length > 1 ? fmtPct(pct) : '—'}</td>
+      <td>${vol}</td>
+      <td>${tr}</td>
+    </tr>`;
+  });
+  document.getElementById('table-wrap').innerHTML = syms.length
+    ? `<table><thead><tr><th>Market</th><th>OI (base)</th><th>Index Price</th><th>OI (USD)</th><th>24h Δ</th><th>24h Vol</th><th>24h Trades</th></tr></thead><tbody>${rows.join('')}</tbody></table>`
+    : '<div class="empty">No data yet — first scrape pending.</div>';
+}
+
+function renderAll() { renderTotal(); renderVolume(); renderMarkets(); renderTable(); }
+
+async function load() {
+  try {
+    const resp = await fetch('./data.json?' + Date.now());
+    DATA = await resp.json();
+  } catch (e) {
+    document.body.innerHTML = '<div class="empty">Failed to load data.json</div>';
+    return;
+  }
+  if (DATA.updated_at) {
+    const d = new Date(DATA.updated_at);
+    document.getElementById('updated').textContent = 'Updated ' + d.toLocaleString();
+  }
+  renderAll();
+}
+
+document.getElementById('range').addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  document.querySelectorAll('#range button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  rangeHours = Number(e.target.dataset.h);
+  renderTotal(); renderMarkets(); renderTable();
+});
+
+document.getElementById('vol-range').addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  document.querySelectorAll('#vol-range button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  volRangeHours = Number(e.target.dataset.h);
+  renderVolume();
+});
+
+load();
+</script>
+</body>
+</html>

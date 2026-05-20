@@ -1,0 +1,6 @@
+/data.json
+  Cache-Control: public, max-age=60, s-maxage=60
+/index.html
+  Cache-Control: public, max-age=300
+/
+  Cache-Control: public, max-age=300
