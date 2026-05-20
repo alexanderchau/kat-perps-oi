@@ -58,6 +58,8 @@ def main() -> int:
 
     total_usd = 0.0
     total_vol = 0.0
+    total_im_usd = 0.0  # sum of OI_usd × initialMarginFraction across markets
+    imf_by_sym: dict[str, float] = {}
     for m in markets:
         sym = m.get("market")
         if not sym:
@@ -75,9 +77,15 @@ def main() -> int:
             trades24h = int(m.get("trades24h") or 0)
         except (TypeError, ValueError):
             trades24h = 0
+        try:
+            imf = float(m.get("initialMarginFraction") or 0)
+        except (TypeError, ValueError):
+            imf = 0.0
+        imf_by_sym[sym] = imf
         oi_usd = oi_base * px
         total_usd += oi_usd
         total_vol += vol_usd
+        total_im_usd += oi_usd * imf
 
         bucket = data["markets"].setdefault(
             sym,
@@ -86,6 +94,7 @@ def main() -> int:
         bucket["baseAsset"] = m.get("baseAsset") or bucket.get("baseAsset")
         bucket["quoteAsset"] = m.get("quoteAsset") or bucket.get("quoteAsset")
         bucket["status"] = m.get("status")
+        bucket["imf"] = imf
         bucket["points"].append(
             {
                 "t": now_ms,
@@ -94,6 +103,7 @@ def main() -> int:
                 "usd": round(oi_usd, 2),
                 "vol": round(vol_usd, 2),
                 "tr": trades24h,
+                "imf": imf,
             }
         )
         if len(bucket["points"]) > MAX_POINTS_PER_MARKET:
@@ -110,9 +120,12 @@ def main() -> int:
         "t": now_ms,
         "usd": round(total_usd, 2),
         "vol": round(exchange_vol if exchange_vol is not None else total_vol, 2),
+        "im": round(total_im_usd, 2),
     })
     if len(data["total"]) > MAX_POINTS_PER_MARKET:
         data["total"] = data["total"][-MAX_POINTS_PER_MARKET:]
+
+    backfill_total_margin(data, imf_by_sym)
 
     data["updated_at"] = now_ms
     data["exchange"] = {
@@ -124,10 +137,41 @@ def main() -> int:
     vol_print = exchange_vol if exchange_vol is not None else total_vol
     print(
         f"[scrape] {len(markets)} markets, total OI ${total_usd:,.0f}, "
-        f"24h vol ${vol_print:,.0f} @ {now_ms}",
+        f"24h vol ${vol_print:,.0f}, min IM ${total_im_usd:,.0f} @ {now_ms}",
         flush=True,
     )
     return 0
+
+
+def backfill_total_margin(data: dict, current_imf: dict[str, float]) -> None:
+    """Fill `im` on any historic `total` entry that pre-dates margin tracking.
+
+    Uses each market point's recorded `imf` when present, else falls back to the
+    current IMF for that symbol. Markets that didn't exist at a given timestamp
+    are simply skipped — backfill is best-effort, not a contract.
+    """
+    needs_backfill = [e for e in data["total"] if "im" not in e]
+    if not needs_backfill:
+        return
+    market_index = {
+        sym: {p["t"]: p for p in bucket.get("points", [])}
+        for sym, bucket in data["markets"].items()
+    }
+    for entry in needs_backfill:
+        t = entry["t"]
+        im = 0.0
+        for sym, pts in market_index.items():
+            p = pts.get(t)
+            if p is None:
+                continue
+            point_imf = p.get("imf")
+            if point_imf is None:
+                point_imf = current_imf.get(sym, 0)
+            try:
+                im += float(p.get("usd", 0)) * float(point_imf)
+            except (TypeError, ValueError):
+                continue
+        entry["im"] = round(im, 2)
 
 
 if __name__ == "__main__":

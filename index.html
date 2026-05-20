@@ -76,6 +76,21 @@
   </div>
 
   <div class="card">
+    <h2>Total Minimum Initial Margin</h2>
+    <div><span id="margin-now" class="big">—</span><span id="margin-delta" class="delta"></span><span id="margin-pct" class="delta" style="color:#8a93a0"></span></div>
+    <div class="range" id="margin-range">
+      <button data-h="24" class="active">24h</button>
+      <button data-h="168">7d</button>
+      <button data-h="720">30d</button>
+      <button data-h="0">All</button>
+    </div>
+    <div class="chart-wrap"><canvas id="margin-chart"></canvas></div>
+    <div style="color:var(--mute);font-size:12px;margin-top:8px">
+      Sum across markets of OI<sub>usd</sub> × initialMarginFraction (IMF). The minimum capital required to back current open positions — actual posted margin may be higher and is not publicly available (Kuma collateral is custodial off-chain). IMF varies 2% (BTC/ETH) → 20% (KAT/MEGA/TAO); this line diverges from total OI as the market mix shifts.
+    </div>
+  </div>
+
+  <div class="card">
     <h2>24h Trader Volume &amp; Fees (exchange-wide)</h2>
     <div><span id="vol-now" class="big">—</span><span id="vol-delta" class="delta"></span><span id="fee-now" class="delta" style="color:#fbbf24"></span></div>
     <div class="range" id="vol-range">
@@ -118,10 +133,11 @@ const TICK = '#8a93a0';
 Chart.defaults.color = TICK;
 Chart.defaults.font.family = '-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif';
 
-let totalChart, volChart, marketsChart;
+let totalChart, volChart, marketsChart, marginChart;
 let DATA = null;
 let rangeHours = 24;
 let volRangeHours = 24;
+let marginRangeHours = 24;
 
 function filterByRange(points, hours) {
   if (!hours) return points;
@@ -186,6 +202,61 @@ function renderTotal() {
   };
   if (totalChart) totalChart.destroy();
   totalChart = new Chart(document.getElementById('total-chart'), cfg);
+}
+
+function renderMargin() {
+  const allPts = DATA.total.filter(p => p.im != null);
+  const pts = filterByRange(allPts, marginRangeHours);
+  const latest = allPts[allPts.length - 1];
+  const ref = pts[0];
+  const latestOi = DATA.total[DATA.total.length - 1];
+
+  document.getElementById('margin-now').textContent = latest ? fmtUsd(latest.im) : '—';
+  const deltaEl = document.getElementById('margin-delta');
+  if (latest && ref && ref !== latest && ref.im > 0) {
+    const pct = ((latest.im - ref.im) / ref.im) * 100;
+    deltaEl.textContent = fmtPct(pct);
+    deltaEl.className = 'delta ' + (pct >= 0 ? 'up' : 'down');
+  } else {
+    deltaEl.textContent = '';
+  }
+  const pctEl = document.getElementById('margin-pct');
+  if (latest && latestOi && latestOi.usd > 0) {
+    pctEl.textContent = '· ' + ((latest.im / latestOi.usd) * 100).toFixed(2) + '% of OI';
+  } else {
+    pctEl.textContent = '';
+  }
+
+  const cfg = {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: 'Min Initial Margin',
+        data: pts.map(p => ({ x: p.t, y: p.im })),
+        borderColor: '#a78bfa',
+        backgroundColor: 'rgba(167,139,250,0.1)',
+        fill: true,
+        tension: 0.25,
+        pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: '#a78bfa',
+        pointHoverBorderColor: '#0b0d10',
+        pointHoverBorderWidth: 2,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => fmtUsdSmall(ctx.parsed.y) } } },
+      scales: {
+        x: timeAxis(marginRangeHours),
+        y: { grid: { color: GRID }, ticks: { color: TICK, callback: v => fmtUsd(v) } },
+      },
+    },
+  };
+  if (marginChart) marginChart.destroy();
+  marginChart = new Chart(document.getElementById('margin-chart'), cfg);
 }
 
 function renderVolume() {
@@ -322,7 +393,7 @@ function renderTable() {
     : '<div class="empty">No data yet — first scrape pending.</div>';
 }
 
-function renderAll() { renderTotal(); renderVolume(); renderMarkets(); renderTable(); }
+function renderAll() { renderTotal(); renderMargin(); renderVolume(); renderMarkets(); renderTable(); }
 
 async function load() {
   try {
@@ -353,6 +424,14 @@ document.getElementById('vol-range').addEventListener('click', e => {
   e.target.classList.add('active');
   volRangeHours = Number(e.target.dataset.h);
   renderVolume();
+});
+
+document.getElementById('margin-range').addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  document.querySelectorAll('#margin-range button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  marginRangeHours = Number(e.target.dataset.h);
+  renderMargin();
 });
 
 load();
